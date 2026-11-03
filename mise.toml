@@ -1,0 +1,29 @@
+[env]
+LLM_REPO = "https://huggingface.co/lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit"
+LLM_MODEL = "qwen3.6-35b-a3b-mlx"
+LLM_CONTEXT = "32768"
+LLM_PORT = "1234"
+OPENAI_BASE_URL = "http://localhost:{{env.LLM_PORT}}/v1"
+
+[tasks.bootstrap]
+description = "Install apps and the lms CLI"
+run = [
+  "brew bundle --file=Brewfile",
+  "~/.lmstudio/bin/lms bootstrap",     # run LM Studio once first
+]
+
+[tasks."llm:pull"]
+run = "lms get $LLM_REPO -y"
+
+[tasks."llm:gpu-limit"]
+description = "Raise GPU memory limit until reboot"
+run = "sudo sysctl iogpu.wired_limit_mb=26000"
+
+[tasks."llm:up"]
+run = [
+  "lms load $LLM_MODEL --context-length $LLM_CONTEXT -y",
+  "lms server start --port $LLM_PORT",
+]
+
+[tasks."llm:down"]
+run = ["lms server stop", "lms unload --all"]
