@@ -85,6 +85,87 @@ export OPENAI_API_KEY=lm-studio
 
 Send requests with the model name from `$LLM_MODEL`.
 
+## Choosing the context size
+
+Qwen3.6 supports up to 262K tokens of context. On a 32 GB Mac, memory is the real limit. We ended up at **32K** (`LLM_CONTEXT = "32768"`). Here's how we got there, with the GPU limit at 26 GB:
+
+| Context | Result |
+| ------- | ------ |
+| 16K | Works, but too small for a coding agent. One file read pushed the prompt to about 14K tokens, leaving about 2.5K for the reply. Qwen spent all of them thinking, so the reply was cut off. |
+| 32K | Works. A 27.8K-token prompt returned the right answer, and free memory dipped to about 10% before recovering. |
+| 128K | Loads, then crashes partway through a long prompt (around 45K tokens filled) with a backend `Channel Error` in the LM Studio log. Not usable on 32 GB. |
+
+Things we learned along the way:
+
+- **A successful load proves nothing.** MLX allocates context memory as the conversation grows, so a large context loads fine and fails later. `lms load --estimate-only` reported the same 26.64 GiB for every size from 32K to 256K. To test a size, send a prompt that actually fills most of the window.
+- **Long prompts are slow to start.** At about 28K tokens, it takes about 1.5 minutes before the first token of the reply.
+- **Memory is tight with a full context.** Close heavy apps while you use the model. Run `mise run llm:down` when you're done to free about 19 GiB.
+- **Qwen thinks before it answers,** often hundreds to thousands of tokens. Give each request a generous `max_tokens`, or the visible reply may be empty.
+
+On a Mac with more memory, try a larger `LLM_CONTEXT` and test it with a prompt that fills most of the window.
+
+## Using it with a coding agent
+
+Agents need to know the context size so they can compact the conversation before it overflows. Here is the setup for [pi](https://github.com/earendil-works/pi). Other agents have similar settings.
+
+In `~/.pi/agent/models.json`, add a provider for LM Studio:
+
+```json
+{
+  "providers": {
+    "lmstudio": {
+      "baseUrl": "http://localhost:1234/v1",
+      "api": "openai-completions",
+      "apiKey": "lm-studio",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      },
+      "models": [
+        {
+          "id": "qwen3.6-35b-a3b-mlx",
+          "name": "Qwen3.6 35B A3B (local)",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 32768,
+          "maxTokens": 8192,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}
+```
+
+- `contextWindow` must match `LLM_CONTEXT`.
+- `maxTokens` caps one reply, thinking included.
+
+In `~/.pi/agent/settings.json`, add a compaction override. pi's defaults (16K reserve, 20K recent) are sized for large cloud models and waste half of a 32K window:
+
+```json
+{
+  "compaction": {
+    "modelOverrides": {
+      "lmstudio/qwen3.6-35b-a3b-mlx": {
+        "reserveTokens": 8192,
+        "keepRecentTokens": 8000
+      }
+    }
+  }
+}
+```
+
+With this, pi compacts at about 24.5K tokens. That always leaves room for one full 8K reply and keeps the last 8K tokens of conversation word for word:
+
+```
+|<------------------- 32K context window ------------------->|
+|<------ conversation, up to ~24.5K ------>|<- 8K reserve ->|
+                                           ↑
+                                     compaction starts
+```
+
+If replies often show "Response was truncated", raise `maxTokens` and `reserveTokens` together (to 12288, for example). pi will then compact sooner.
+
 ## Troubleshooting
 
 - **The model won't load, or you get an out-of-memory error.** By default macOS lets the GPU use only part of the system RAM. Run `mise run llm:gpu-limit` to raise the limit to about 26 GB, then try `llm:up` again. The setting resets on reboot. If your Mac has a different amount of RAM, edit the number in `mise.toml` and leave several GB for the system.
